@@ -1,0 +1,1457 @@
+--[[
+    Lib Fac! v6
+    Top navigation: main tabs in a row, sub tabs in a sliding pill,
+    sections in two columns. Header: title | status | search | avatar.
+
+    local Library = loadstring(readfile("NovaUI/NovaLib_v6.lua"))()
+]]
+
+local Players      = game:GetService("Players")
+local UIS          = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local TextService  = game:GetService("TextService")
+local HttpService  = game:GetService("HttpService")
+local RunService   = game:GetService("RunService")
+local CoreGui      = game:GetService("CoreGui")
+
+local genv = (getgenv and getgenv()) or _G
+if type(genv.LibFac) == "table" and genv.LibFac.Unload then
+    pcall(function() genv.LibFac:Unload() end)
+end
+
+local LocalPlayer = Players.LocalPlayer
+local V2, UD, UD2, OFF = Vector2.new, UDim.new, UDim2.new, UDim2.fromOffset
+local WHITE, BLACK = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
+local MB1, TOUCH = Enum.UserInputType.MouseButton1, Enum.UserInputType.Touch
+local MOVE = Enum.UserInputType.MouseMovement
+local LEFT, RIGHT = Enum.TextXAlignment.Left, Enum.TextXAlignment.Right
+local TRUNC = Enum.TextTruncate.AtEnd
+local QUINT, QUAD, BACK = Enum.EasingStyle.Quint, Enum.EasingStyle.Quad, Enum.EasingStyle.Back
+local OUT, IN = Enum.EasingDirection.Out, Enum.EasingDirection.In
+
+local FONT      = Enum.Font.RobotoMono
+local FONT_TEXT = Enum.Font.GothamMedium
+local FONT_BOLD = Enum.Font.GothamBold
+
+-- layout (pixels)
+local HEAD_H, NAV_H, PILL_H = 44, 36, 30
+local NAV_Y = HEAD_H                    -- main tab row: 44 to 80
+local PILL_Y = NAV_Y + NAV_H + 8        -- sub tab pill: 88 to 118
+local CONTENT_Y = PILL_Y + PILL_H + 8   -- sections: from 126
+local SIDE = 16                         -- left and right margin
+
+local HasFS = typeof(writefile) == "function" and typeof(readfile) == "function"
+    and typeof(isfile) == "function" and typeof(isfolder) == "function"
+    and typeof(makefolder) == "function" and typeof(listfiles) == "function"
+
+local Library = {
+    Flags = {}, Setters = {}, Connections = {}, KeyEntries = {},
+    Bindings = setmetatable({}, { __mode = "k" }),
+    GlassSet = setmetatable({}, { __mode = "k" }),
+    Folder = "NovaUI", ToggleKey = Enum.KeyCode.RightControl,
+    Visible = true, NotifCount = 0, FlagCount = 0,
+    Transparency = 0.25, BlurEnabled = true, BlurSize = 12,
+    Theme = {
+        Background    = Color3.fromRGB(12, 16, 22),
+        Surface       = Color3.fromRGB(17, 23, 32),
+        Section       = Color3.fromRGB(21, 28, 38),
+        SectionHead   = Color3.fromRGB(27, 36, 48),
+        Element       = Color3.fromRGB(31, 42, 55),
+        ElementHover  = Color3.fromRGB(40, 53, 69),
+        Stroke        = Color3.fromRGB(43, 56, 72),
+        SectionStroke = Color3.fromRGB(35, 46, 60),
+        Text          = Color3.fromRGB(231, 238, 247),
+        SubText       = Color3.fromRGB(127, 144, 166),
+        Accent        = Color3.fromRGB(92, 200, 255),
+        Online        = Color3.fromRGB(74, 222, 128),
+    },
+}
+
+---------------------------------------------------------------------
+-- helpers
+---------------------------------------------------------------------
+local function New(class, props, parent)
+    local inst = Instance.new(class)
+    if inst:IsA("GuiObject") then inst.BorderSizePixel = 0 end
+    if props then
+        for k, v in pairs(props) do inst[k] = v end
+    end
+    if parent then inst.Parent = parent end
+    return inst
+end
+
+local function Corner(r, parent)
+    return New("UICorner", { CornerRadius = UD(0, r or 6) }, parent)
+end
+
+local function Pad(parent, t, b, l, r)
+    return New("UIPadding", {
+        PaddingTop = UD(0, t or 0), PaddingBottom = UD(0, b or 0),
+        PaddingLeft = UD(0, l or 0), PaddingRight = UD(0, r or 0),
+    }, parent)
+end
+
+local function VList(parent, gap)
+    return New("UIListLayout", { Padding = UD(0, gap or 0), SortOrder = Enum.SortOrder.LayoutOrder }, parent)
+end
+
+local function Tween(o, props, t, style, dir)
+    local tw = TweenService:Create(o, TweenInfo.new(t or 0.18, style or QUINT, dir or OUT), props)
+    tw:Play()
+    return tw
+end
+
+local function Round(n, dec)
+    local m = 10 ^ (dec or 0)
+    return math.floor(n * m + 0.5) / m
+end
+
+local function Stroke(parent, key, thick, transp)
+    local s = New("UIStroke", {
+        Thickness = thick or 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Transparency = transp or 0,
+    }, parent)
+    Library:Bind(s, "Color", key or "Stroke")
+    return s
+end
+
+-- a list item inside a section, numbered in order
+local function Item(sec, class, props)
+    sec.Count = sec.Count + 1
+    props.LayoutOrder = sec.Count
+    return New(class, props, sec.Body)
+end
+
+---------------------------------------------------------------------
+-- theme, transparency and blur
+---------------------------------------------------------------------
+-- Bind(obj, "Prop", "ThemeKey"): the property follows the theme colour
+function Library:Bind(obj, prop, key)
+    obj[prop] = self.Theme[key]
+    self.Bindings[obj] = self.Bindings[obj] or {}
+    self.Bindings[obj][prop] = key
+    return obj
+end
+
+-- MakeGlass(obj): the background follows the transparency setting
+function Library:MakeGlass(obj)
+    self.GlassSet[obj] = true
+    obj.BackgroundTransparency = self.Transparency
+    return obj
+end
+
+function Library:SetTheme(key, color)
+    self.Theme[key] = color
+    for obj, props in pairs(self.Bindings) do
+        for prop, k in pairs(props) do
+            if k == key then pcall(function() obj[prop] = color end) end
+        end
+    end
+end
+
+function Library:SetAccent(color)
+    self:SetTheme("Accent", color)
+end
+
+-- fraction from 0 (solid) to 0.9 (almost clear)
+function Library:SetTransparency(v)
+    self.Transparency = math.clamp(tonumber(v) or 0, 0, 0.9)
+    for obj in pairs(self.GlassSet) do
+        if obj.Parent then obj.BackgroundTransparency = self.Transparency end
+    end
+end
+
+function Library:SetBlur(on, size)
+    if on ~= nil then self.BlurEnabled = on and true or false end
+    if size then self.BlurSize = math.clamp(size, 0, 56) end
+    if not self.Blur then
+        local ok, b = pcall(function()
+            local e = Instance.new("BlurEffect")
+            e.Size = 0
+            e.Parent = game:GetService("Lighting")
+            return e
+        end)
+        if ok then self.Blur = b end
+    end
+    if self.Blur then
+        Tween(self.Blur, { Size = (self.Visible and self.BlurEnabled) and self.BlurSize or 0 }, 0.25, QUAD)
+    end
+end
+
+function Library:Connect(signal, fn)
+    local c = signal:Connect(fn)
+    table.insert(self.Connections, c)
+    return c
+end
+
+function Library:Call(fn, ...)
+    if type(fn) ~= "function" then return end
+    local ok, err = pcall(fn, ...)
+    if not ok then warn("[Lib Fac!] " .. tostring(err)) end
+end
+
+function Library:NextFlag()
+    self.FlagCount = self.FlagCount + 1
+    return "flag_" .. self.FlagCount
+end
+
+---------------------------------------------------------------------
+-- holders (screen gui, notifications, keybind list)
+---------------------------------------------------------------------
+Library.Holder = New("ScreenGui", {
+    Name = "LibFacUI", ResetOnSpawn = false, IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 500,
+})
+if not pcall(function() Library.Holder.Parent = (gethui and gethui()) or CoreGui end) or not Library.Holder.Parent then
+    Library.Holder.Parent = LocalPlayer:WaitForChild("PlayerGui")
+end
+
+Library.NotifHolder = New("Frame", {
+    Name = "Notifications", AnchorPoint = V2(1, 1), Position = UD2(1, -16, 1, -16),
+    Size = UD2(0, 280, 1, -32), BackgroundTransparency = 1,
+}, Library.Holder)
+New("UIListLayout", {
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    VerticalAlignment = Enum.VerticalAlignment.Bottom,
+    Padding = UD(0, 8),
+}, Library.NotifHolder)
+
+Library.KeyPanel = New("Frame", {
+    Name = "KeyList", Position = OFF(12, 120), Size = OFF(200, 0),
+    AutomaticSize = Enum.AutomaticSize.Y, Visible = false, ZIndex = 80,
+}, Library.Holder)
+Corner(8, Library.KeyPanel)
+Library:MakeGlass(Library.KeyPanel)
+Library:Bind(Library.KeyPanel, "BackgroundColor3", "Surface")
+Stroke(Library.KeyPanel, "Stroke", 1, 0.2)
+Pad(Library.KeyPanel, 10, 10, 12, 12)
+Library.KeyLabel = New("TextLabel", {
+    Size = UD2(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+    Text = "", Font = FONT, TextSize = 11, TextXAlignment = LEFT, TextYAlignment = Enum.TextYAlignment.Top,
+    ZIndex = 81,
+}, Library.KeyPanel)
+Library:Bind(Library.KeyLabel, "TextColor3", "Text")
+
+-- shows the keybinds that are set, when the setting is on
+function Library:_RefreshKeys()
+    local lines = {}
+    for _, e in ipairs(self.KeyEntries) do
+        if e.Key then table.insert(lines, e.Name .. "   [" .. e.Key.Name .. "]") end
+    end
+    self.KeyLabel.Text = table.concat(lines, "\n")
+    self.KeyPanel.Visible = (#lines > 0) and (self.Flags.show_keylist == true)
+end
+
+---------------------------------------------------------------------
+-- notifications
+---------------------------------------------------------------------
+function Library:Notify(o)
+    o = o or {}
+    local colors = {
+        info    = Color3.fromRGB(138, 164, 200),
+        success = Color3.fromRGB(74, 222, 128),
+        warning = Color3.fromRGB(245, 180, 84),
+        error   = Color3.fromRGB(242, 109, 109),
+    }
+    local accent = colors[o.Type or "info"] or colors.info
+    self.NotifCount = self.NotifCount + 1
+
+    local card = New("Frame", {
+        Size = UD2(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundColor3 = self.Theme.Surface, LayoutOrder = self.NotifCount,
+    }, self.NotifHolder)
+    Corner(8, card)
+    self:MakeGlass(card)
+    Stroke(card, "Stroke", 1, 0.2)
+    Pad(card, 10, 12, 14, 12)
+    VList(card, 3)
+
+    New("TextLabel", {
+        Size = UD2(1, 0, 0, 16), BackgroundTransparency = 1, LayoutOrder = 1,
+        Text = tostring(o.Title or "Lib Fac!"), Font = FONT_BOLD, TextSize = 13,
+        TextXAlignment = LEFT, TextColor3 = accent,
+    }, card)
+
+    if o.Text then
+        local msg = New("TextLabel", {
+            Size = UD2(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+            LayoutOrder = 2, Text = tostring(o.Text), Font = FONT_TEXT, TextSize = 12,
+            TextWrapped = true, TextXAlignment = LEFT, TextYAlignment = Enum.TextYAlignment.Top,
+        }, card)
+        self:Bind(msg, "TextColor3", "SubText")
+    end
+
+    task.delay(tonumber(o.Duration) or 4, function()
+        if card.Parent then card:Destroy() end
+    end)
+end
+Library.Notification = Library.Notify
+
+---------------------------------------------------------------------
+-- dragging, visibility, toggle key, loader
+---------------------------------------------------------------------
+function Library:Draggable(handle, obj)
+    local dragging, startMouse, startPos = false, nil, nil
+    handle.InputBegan:Connect(function(i)
+        if i.UserInputType == MB1 or i.UserInputType == TOUCH then
+            dragging, startMouse, startPos = true, i.Position, obj.Position
+        end
+    end)
+    self:Connect(UIS.InputChanged, function(i)
+        if dragging and (i.UserInputType == MOVE or i.UserInputType == TOUCH) then
+            local d = i.Position - startMouse
+            obj.Position = UD2(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+    self:Connect(UIS.InputEnded, function(i)
+        if i.UserInputType == MB1 or i.UserInputType == TOUCH then dragging = false end
+    end)
+end
+
+function Library:SetVisible(v)
+    self.Visible = v and true or false
+    local w = self.Window
+    if not w then return end
+    if self.Visible then
+        w.Main.Visible = true
+        Tween(w.Main, { GroupTransparency = 0 }, 0.3, QUAD)
+        Tween(w.Scale, { Scale = 1 }, 0.4, BACK)
+    else
+        Tween(w.Main, { GroupTransparency = 1 }, 0.2, QUAD, IN)
+        Tween(w.Scale, { Scale = 0.95 }, 0.2, QUAD, IN)
+        task.delay(0.21, function()
+            if not self.Visible then w.Main.Visible = false end
+        end)
+    end
+    self:SetBlur()
+end
+
+---------------------------------------------------------------------
+-- window
+---------------------------------------------------------------------
+local WindowMT, GroupMT, SubMT, SectionMT = {}, {}, {}, {}
+WindowMT.__index = WindowMT
+GroupMT.__index = GroupMT
+SubMT.__index = SubMT
+SectionMT.__index = SectionMT
+
+function Library:Window(opts)
+    opts = opts or {}
+    local lib = self
+    if opts.Keybind and Enum.KeyCode[opts.Keybind] then self.ToggleKey = Enum.KeyCode[opts.Keybind] end
+    if opts.Blur ~= nil then self.BlurEnabled = opts.Blur and true or false end
+    if opts.BlurSize then self.BlurSize = math.clamp(opts.BlurSize, 0, 56) end
+    if opts.Folder then self.Folder = opts.Folder end
+    if opts.Accent then self:SetAccent(opts.Accent) end
+
+    local name = tostring(opts.Name or "Lib Fac!")
+    local version = tostring(opts.Version or "v6.0")
+    local W, H = 640, 430
+    if typeof(opts.Size) == "UDim2" then W, H = opts.Size.X.Offset, opts.Size.Y.Offset end
+    local vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or V2(1280, 720)
+    W = math.min(W, vp.X - 40)
+    H = math.min(H, vp.Y - 60)
+
+    -- window
+    local main = New("CanvasGroup", {
+        Name = "Main", AnchorPoint = V2(0.5, 0.5), Position = UD2(0.5, 0, 0.5, 0),
+        Size = OFF(W, H), GroupTransparency = 1, ClipsDescendants = true,
+        Visible = false, BackgroundColor3 = self.Theme.Background, ZIndex = 1,
+    }, self.Holder)
+    Corner(10, main)
+    self:MakeGlass(main)
+    Stroke(main, "Stroke", 1, 0.1)
+    local scale = New("UIScale", { Scale = 0.95 }, main)
+
+    -- header: title on the left, status / search / avatar on the right
+    local header = New("Frame", {
+        Size = UD2(1, 0, 0, HEAD_H), BackgroundColor3 = self.Theme.SectionHead, ZIndex = 3,
+    }, main)
+    self:MakeGlass(header)
+
+    local title = New("TextLabel", {
+        AnchorPoint = V2(0, 0.5), Position = UD2(0, SIDE, 0.5, 0), Size = UD2(0, 220, 0, 20),
+        BackgroundTransparency = 1, Text = name .. "  " .. version, Font = FONT_BOLD, TextSize = 15,
+        TextXAlignment = LEFT, TextTruncate = TRUNC, ZIndex = 4,
+    }, header)
+    self:Bind(title, "TextColor3", "Text")
+
+    local right = New("Frame", {
+        AnchorPoint = V2(1, 0.5), Position = UD2(1, -14, 0.5, 0), Size = UD2(0, 0, 0, 30),
+        AutomaticSize = Enum.AutomaticSize.X, BackgroundTransparency = 1, ZIndex = 4,
+    }, header)
+    New("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal, Padding = UD(0, 14),
+        HorizontalAlignment = Enum.HorizontalAlignment.Right,
+        VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder,
+    }, right)
+
+    -- status: green dot and text
+    local statusBox = New("Frame", {
+        LayoutOrder = 1, Size = OFF(0, 16), AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundTransparency = 1, ZIndex = 4,
+    }, right)
+    New("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal, Padding = UD(0, 6),
+        VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder,
+    }, statusBox)
+    local dot = New("Frame", {
+        LayoutOrder = 1, Size = OFF(8, 8), BackgroundColor3 = self.Theme.Online, ZIndex = 4,
+    }, statusBox)
+    Corner(4, dot)
+    local statusLbl = New("TextLabel", {
+        LayoutOrder = 2, BackgroundTransparency = 1, Size = OFF(0, 16), AutomaticSize = Enum.AutomaticSize.X,
+        Text = tostring(opts.Status or "Online"), Font = FONT_TEXT, TextSize = 13, ZIndex = 4,
+    }, statusBox)
+    self:Bind(statusLbl, "TextColor3", "SubText")
+    self.StatusRefs = { Dot = dot, Label = statusLbl }
+
+    -- search: exact names open straight away, Enter opens the best match
+    local search = New("TextBox", {
+        LayoutOrder = 2, Size = OFF(200, 28), Text = "", PlaceholderText = "search",
+        ClearTextOnFocus = false, Font = FONT_TEXT, TextSize = 12, TextXAlignment = LEFT, ZIndex = 4,
+    }, right)
+    Corner(6, search)
+    Pad(search, 0, 0, 10, 10)
+    self:Bind(search, "BackgroundColor3", "Element")
+    self:Bind(search, "TextColor3", "Text")
+    self:Bind(search, "PlaceholderColor3", "SubText")
+    self:MakeGlass(search)
+    search:GetPropertyChangedSignal("Text"):Connect(function()
+        lib.Flags.search_text = search.Text
+        lib:Call(opts.OnSearch, search.Text)
+        local hit = search.Text ~= "" and lib:Find(search.Text)
+        if hit and hit.exact then
+            lib:Navigate(hit)
+            search.Text = ""
+        end
+    end)
+    search.FocusLost:Connect(function(enterPressed)
+        if not enterPressed then return end
+        local typed = search.Text
+        local hit = typed ~= "" and lib:Find(typed)
+        if hit then
+            lib:Navigate(hit)
+        elseif typed ~= "" then
+            lib:Notify({ Title = "Search", Text = 'Nothing matches "' .. typed .. '".', Type = "warning", Duration = 2 })
+        end
+        search.Text = ""
+        lib.Flags.search_text = ""
+    end)
+
+    -- avatar: the logged-in account by default
+    local avatarBox = New("Frame", { LayoutOrder = 3, Size = OFF(30, 30), BackgroundColor3 = self.Theme.Element, ZIndex = 4 }, right)
+    Corner(15, avatarBox)
+    self:Bind(avatarBox, "BackgroundColor3", "Element")
+    local avatar = New("ImageLabel", {
+        Size = UD2(1, 0, 1, 0), BackgroundTransparency = 1, Image = "",
+        ScaleType = Enum.ScaleType.Crop, ZIndex = 5,
+    }, avatarBox)
+    Corner(15, avatar)
+    local prof = opts.Profile or {}
+    if prof.Image then
+        avatar.Image = tostring(prof.Image)
+    else
+        task.spawn(function()
+            local ok, img = pcall(Players.GetUserThumbnailAsync, Players,
+                prof.UserId or LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+            if ok and avatar.Parent and img then avatar.Image = img end
+        end)
+    end
+
+    New("Frame", { Position = OFF(0, HEAD_H), Size = UD2(1, 0, 0, 1), ZIndex = 3, BackgroundColor3 = self.Theme.Stroke }, main)
+
+    -- main tab row
+    local navRow = New("Frame", {
+        Position = OFF(SIDE, NAV_Y), Size = UD2(1, -SIDE * 2, 0, NAV_H), BackgroundTransparency = 1, ZIndex = 2,
+    }, main)
+    New("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal, Padding = UD(0, 4),
+        VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder,
+    }, navRow)
+    New("Frame", { Position = OFF(0, NAV_Y + NAV_H), Size = UD2(1, 0, 0, 1), ZIndex = 2, BackgroundColor3 = self.Theme.Stroke }, main)
+
+    -- sub tab pill row (only the pill of the selected main tab is shown)
+    local pillRow = New("Frame", {
+        Position = OFF(SIDE, PILL_Y), Size = UD2(1, -SIDE * 2, 0, PILL_H), BackgroundTransparency = 1, ZIndex = 2,
+    }, main)
+
+    -- content: the sections page
+    local content = New("Frame", {
+        Position = OFF(0, CONTENT_Y), Size = UD2(1, 0, 1, -CONTENT_Y),
+        BackgroundTransparency = 1, ClipsDescendants = true, ZIndex = 2,
+    }, main)
+
+    -- loader
+    local loadTime = opts.LoadTime or 1.0
+    local loader = New("CanvasGroup", {
+        Size = UD2(1, 0, 1, 0), GroupTransparency = 0, BackgroundColor3 = self.Theme.Background, ZIndex = 50,
+    }, main)
+    local lt = New("TextLabel", {
+        AnchorPoint = V2(0.5, 0.5), Position = UD2(0.5, 0, 0.5, -10), Size = OFF(300, 20),
+        BackgroundTransparency = 1, Text = string.lower(name), Font = FONT_BOLD, TextSize = 15,
+    }, loader)
+    self:Bind(lt, "TextColor3", "Text")
+    local track = New("Frame", {
+        AnchorPoint = V2(0.5, 0.5), Position = UD2(0.5, 0, 0.5, 14), Size = OFF(180, 2),
+        BackgroundColor3 = self.Theme.Element,
+    }, loader)
+    local fill = New("Frame", { Size = UD2(0, 0, 1, 0), BackgroundColor3 = self.Theme.Accent }, track)
+    Tween(fill, { Size = UD2(1, 0, 1, 0) }, loadTime, Enum.EasingStyle.Quart, Enum.EasingDirection.InOut)
+    task.delay(loadTime + 0.2, function()
+        if loader.Parent then
+            Tween(loader, { GroupTransparency = 1 }, 0.4, QUAD)
+            task.delay(0.45, function()
+                if loader.Parent then loader:Destroy() end
+            end)
+        end
+    end)
+
+    local win = setmetatable({
+        Library = self, Name = name, Main = main, Scale = scale,
+        NavRow = navRow, PillRow = pillRow, Content = content,
+        Groups = {}, Subs = {},
+    }, WindowMT)
+    self.Window = win
+
+    self:Draggable(header, main)
+    self:Connect(UIS.InputBegan, function(input, processed)
+        if processed then return end
+        if input.KeyCode == lib.ToggleKey then lib:SetVisible(not lib.Visible) end
+    end)
+
+    -- mobile toggle button
+    if UIS.TouchEnabled and not UIS.KeyboardEnabled then
+        local tb = New("TextButton", {
+            Position = OFF(12, 12), Size = OFF(36, 36), Text = string.upper(string.sub(name, 1, 1)),
+            Font = FONT_BOLD, TextSize = 16, AutoButtonColor = false, ZIndex = 60, BackgroundColor3 = self.Theme.Surface,
+        }, self.Holder)
+        Corner(8, tb)
+        self:Bind(tb, "TextColor3", "Accent")
+        tb.MouseButton1Click:Connect(function() lib:SetVisible(not lib.Visible) end)
+    end
+
+    task.defer(function() lib:SetVisible(true) end)
+    return win
+end
+
+---------------------------------------------------------------------
+-- main tabs
+---------------------------------------------------------------------
+function WindowMT:Tab(o)
+    o = o or {}
+    local lib = self.Library
+    local g = setmetatable({
+        Window = self, Name = tostring(o.Name or "Tab"), Subs = {},
+        Selected = false, Active = nil, Cursor = 4,
+    }, GroupMT)
+
+    local btn = New("TextButton", {
+        AutomaticSize = Enum.AutomaticSize.X, Size = OFF(0, NAV_H), BackgroundTransparency = 1,
+        Text = g.Name, Font = FONT_BOLD, TextSize = 13, AutoButtonColor = false,
+        LayoutOrder = #self.Groups + 1, ZIndex = 3,
+    }, self.NavRow)
+    Pad(btn, 0, 0, 12, 12)
+    lib:Bind(btn, "TextColor3", "SubText")
+
+    -- accent underline under the selected main tab
+    local bar = New("Frame", {
+        AnchorPoint = V2(0.5, 1), Position = UD2(0.5, 0, 1, 0), Size = UD2(1, -24, 0, 2),
+        BackgroundTransparency = 1, ZIndex = 3,
+    }, btn)
+    lib:Bind(bar, "BackgroundColor3", "Accent")
+    Corner(1, bar)
+
+    -- the pill that holds this tab's sub tabs
+    local pill = New("Frame", { Size = OFF(4, PILL_H), Visible = false, ZIndex = 2 }, self.PillRow)
+    Corner(6, pill)
+    lib:Bind(pill, "BackgroundColor3", "Element")
+    lib:MakeGlass(pill)
+    local hl = New("Frame", { Position = OFF(4, 4), Size = OFF(0, PILL_H - 8), ZIndex = 2 }, pill)
+    Corner(4, hl)
+    lib:Bind(hl, "BackgroundColor3", "ElementHover")
+
+    g.Button, g.Label, g.Bar, g.Pill, g.Highlight = btn, btn, bar, pill, hl
+    table.insert(self.Groups, g)
+
+    btn.MouseEnter:Connect(function()
+        if not g.Selected then Tween(btn, { TextColor3 = lib.Theme.Text }, 0.15) end
+    end)
+    btn.MouseLeave:Connect(function()
+        if not g.Selected then Tween(btn, { TextColor3 = lib.Theme.SubText }, 0.2) end
+    end)
+    btn.MouseButton1Click:Connect(function() self:SelectGroup(g) end)
+
+    if not self.CurrentGroup then self:SelectGroup(g) end
+    return g
+end
+
+function WindowMT:SelectGroup(g)
+    local lib = self.Library
+    self.CurrentGroup = g
+    for _, o in ipairs(self.Groups) do
+        local on = o == g
+        o.Selected = on
+        o.Pill.Visible = on
+        Tween(o.Label, { TextColor3 = on and lib.Theme.Text or lib.Theme.SubText }, 0.25)
+        Tween(o.Bar, { BackgroundTransparency = on and 0 or 1 }, 0.25)
+    end
+    local target = g.Active or g.Subs[1]
+    if target then self:SelectSub(target) end
+end
+
+---------------------------------------------------------------------
+-- sub tabs (inside the pill)
+---------------------------------------------------------------------
+function WindowMT:SelectSub(s)
+    local lib = self.Library
+    self.CurrentSub = s
+    s.Group.Active = s
+    for _, o in ipairs(self.Subs) do
+        local on = o == s
+        o.Active = on
+        o.Page.Visible = on
+        Tween(o.Button, { TextColor3 = on and lib.Theme.Text or lib.Theme.SubText }, 0.25)
+    end
+    local hl = s.Group.Highlight
+    local pos, size = OFF(s.X, 4), OFF(s.W, PILL_H - 8)
+    if hl.Size.X.Offset == 0 then
+        hl.Position = pos
+        hl.Size = size
+    else
+        Tween(hl, { Position = pos, Size = size }, 0.3, QUINT)
+    end
+end
+
+function GroupMT:SubTab(o)
+    o = o or {}
+    local win = self.Window
+    local lib = win.Library
+
+    local s = setmetatable({
+        Window = win, Group = self, Name = tostring(o.Name or "Sub"),
+        Sections = {}, Count = { 0, 0 }, Active = false,
+    }, SubMT)
+
+    -- position inside the pill, computed from the text width
+    local textW = TextService:GetTextSize(s.Name, 12, FONT_TEXT, V2(1000, 100)).X
+    s.W = math.floor(textW + 24)
+    s.X = self.Cursor
+    self.Cursor = s.X + s.W + 2
+    self.Pill.Size = OFF(self.Cursor + 2, PILL_H)
+
+    local btn = New("TextButton", {
+        Position = OFF(s.X, 4), Size = OFF(s.W, PILL_H - 8), BackgroundTransparency = 1,
+        Text = s.Name, Font = FONT_TEXT, TextSize = 12, AutoButtonColor = false, ZIndex = 3,
+    }, self.Pill)
+    lib:Bind(btn, "TextColor3", "SubText")
+    s.Button = btn
+
+    -- page: two columns of sections
+    local page = New("Frame", {
+        Position = OFF(SIDE, 0), Size = UD2(1, -SIDE * 2, 1, 0),
+        BackgroundTransparency = 1, Visible = false, ZIndex = 2,
+    }, win.Content)
+    s.Page = page
+    s.Columns = {}
+    for i = 1, 2 do
+        local col = New("ScrollingFrame", {
+            Position = i == 1 and UD2(0, 0, 0, 0) or UD2(0.5, 7, 0, 0),
+            Size = UD2(0.5, -7, 1, -6), BackgroundTransparency = 1, ScrollBarThickness = 2,
+            CanvasSize = UD2(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollingDirection = Enum.ScrollingDirection.Y,
+        }, page)
+        lib:Bind(col, "ScrollBarImageColor3", "Stroke")
+        Pad(col, 0, 6, 0, 6)
+        VList(col, 14)
+        s.Columns[i] = col
+    end
+
+    btn.MouseEnter:Connect(function()
+        if not s.Active then Tween(btn, { TextColor3 = lib.Theme.Text }, 0.15) end
+    end)
+    btn.MouseLeave:Connect(function()
+        if not s.Active then Tween(btn, { TextColor3 = lib.Theme.SubText }, 0.2) end
+    end)
+    btn.MouseButton1Click:Connect(function() win:SelectSub(s) end)
+
+    table.insert(self.Subs, s)
+    table.insert(win.Subs, s)
+    if not self.Active then
+        self.Active = s
+        if win.CurrentGroup == self then win:SelectSub(s) end
+    end
+    return s
+end
+
+---------------------------------------------------------------------
+-- sections (cards in the two columns)
+---------------------------------------------------------------------
+function SubMT:Section(o)
+    o = o or {}
+    local lib = self.Window.Library
+    local idx = o.Side == 2 and 2 or 1
+    self.Count[idx] = self.Count[idx] + 1
+    local col = self.Columns[idx]
+
+    local card = New("Frame", {
+        Size = UD2(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        LayoutOrder = self.Count[idx], ClipsDescendants = true, BackgroundColor3 = lib.Theme.Section,
+    }, col)
+    Corner(8, card)
+    lib:MakeGlass(card)
+    Stroke(card, "SectionStroke", 1, 0.3)
+    VList(card, 0)
+
+    local head = New("Frame", { Size = UD2(1, 0, 0, 36), LayoutOrder = 0 }, card)
+    Corner(8, head) -- rounds the top corners of the header
+    lib:Bind(head, "BackgroundColor3", "SectionHead")
+    lib:MakeGlass(head)
+    -- covers the bottom corners so only the top of the header is rounded
+    local cover = New("Frame", { Size = UD2(1, 0, 0, 8), Position = UD2(0, 0, 1, -8) }, head)
+    lib:Bind(cover, "BackgroundColor3", "SectionHead")
+    lib:MakeGlass(cover)
+    local tick = New("Frame", { AnchorPoint = V2(0, 0.5), Position = UD2(0, 14, 0.5, 0), Size = OFF(6, 6) }, head)
+    Corner(3, tick)
+    lib:Bind(tick, "BackgroundColor3", "Accent")
+    local title = New("TextLabel", {
+        BackgroundTransparency = 1, Position = OFF(28, 0), Size = UD2(1, -38, 1, 0),
+        Text = string.upper(tostring(o.Name or "Section")), Font = FONT_BOLD, TextSize = 11,
+        TextXAlignment = LEFT, TextTruncate = TRUNC,
+    }, head)
+    lib:Bind(title, "TextColor3", "Text")
+
+    local body = New("Frame", {
+        Size = UD2(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1, LayoutOrder = 1,
+    }, card)
+    Pad(body, 12, 14, 14, 14)
+    VList(body, 10)
+
+    local sec = setmetatable({ Window = self.Window, Body = body, Count = 0 }, SectionMT)
+    table.insert(self.Sections, { Name = tostring(o.Name or "Section"), Card = card, Column = col, Sub = self })
+    return sec
+end
+
+function SectionMT:Label(text)
+    local lib = self.Window.Library
+    local l = Item(self, "TextLabel", {
+        Size = UD2(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+        Text = tostring(text or ""), Font = FONT_TEXT, TextSize = 12, TextWrapped = true, TextXAlignment = LEFT,
+    })
+    lib:Bind(l, "TextColor3", "SubText")
+    return { SetText = function(_, t) l.Text = tostring(t) end }
+end
+
+function SectionMT:Divider(text)
+    local lib = self.Window.Library
+    if text then
+        local t = Item(self, "TextLabel", {
+            Size = UD2(1, 0, 0, 12), BackgroundTransparency = 1, Text = string.upper(tostring(text)),
+            Font = FONT, TextSize = 9, TextXAlignment = LEFT,
+        })
+        lib:Bind(t, "TextColor3", "SubText")
+    end
+    local line = Item(self, "Frame", { Size = UD2(1, 0, 0, 1) })
+    lib:Bind(line, "BackgroundColor3", "Stroke")
+end
+
+function SectionMT:Button(o)
+    o = o or {}
+    local lib = self.Window.Library
+    local b = Item(self, "TextButton", {
+        Size = UD2(1, 0, 0, 28), Text = tostring(o.Name or "Button"), Font = FONT_TEXT,
+        TextSize = 13, AutoButtonColor = false,
+    })
+    Corner(6, b)
+    lib:Bind(b, "BackgroundColor3", "Element")
+    lib:Bind(b, "TextColor3", "Text")
+    lib:MakeGlass(b)
+    b.MouseEnter:Connect(function() Tween(b, { BackgroundColor3 = lib.Theme.ElementHover }, 0.15) end)
+    b.MouseLeave:Connect(function() Tween(b, { BackgroundColor3 = lib.Theme.Element }, 0.2) end)
+    b.MouseButton1Click:Connect(function() lib:Call(o.Callback) end)
+    return { SetText = function(_, t) b.Text = tostring(t) end }
+end
+
+function SectionMT:Toggle(o)
+    o = o or {}
+    local lib = self.Window.Library
+    local flag = o.Flag or lib:NextFlag()
+    local row = Item(self, "TextButton", { Size = UD2(1, 0, 0, 20), BackgroundTransparency = 1, Text = "", AutoButtonColor = false })
+    local label = New("TextLabel", {
+        BackgroundTransparency = 1, Size = UD2(1, -26, 1, 0), Text = tostring(o.Name or "Toggle"),
+        Font = FONT_TEXT, TextSize = 13, TextXAlignment = LEFT,
+    }, row)
+    lib:Bind(label, "TextColor3", "SubText")
+    local box = New("Frame", { AnchorPoint = V2(1, 0.5), Position = UD2(1, 0, 0.5, 0), Size = OFF(14, 14) }, row)
+    Corner(4, box)
+    lib:Bind(box, "BackgroundColor3", "Element")
+    local fill = New("Frame", {
+        AnchorPoint = V2(0.5, 0.5), Position = UD2(0.5, 0, 0.5, 0), Size = OFF(0, 0), BackgroundTransparency = 1,
+    }, box)
+    Corner(3, fill)
+    lib:Bind(fill, "BackgroundColor3", "Accent")
+
+    local value = false
+    local function set(v, silent)
+        value = v and true or false
+        lib.Flags[flag] = value
+        Tween(fill, { Size = value and OFF(8, 8) or OFF(0, 0), BackgroundTransparency = value and 0 or 1 }, 0.25, BACK)
+        Tween(label, { TextColor3 = value and lib.Theme.Text or lib.Theme.SubText }, 0.2)
+        if not silent then lib:Call(o.Callback, value) end
+    end
+    row.MouseButton1Click:Connect(function() set(not value) end)
+    set(o.Default == true, true)
+    lib.Setters[flag] = function(v, s) set(v, s) end
+    return { Set = function(v, s) set(v, s) end, Get = function() return value end }
+end
+
+function SectionMT:Keybind(o)
+    o = o or {}
+    local lib = self.Window.Library
+    local flag = o.Flag or lib:NextFlag()
+    local row = Item(self, "Frame", { Size = UD2(1, 0, 0, 24), BackgroundTransparency = 1 })
+    local label = New("TextLabel", {
+        BackgroundTransparency = 1, Size = UD2(1, -100, 1, 0), Text = tostring(o.Name or "Keybind"),
+        Font = FONT_TEXT, TextSize = 13, TextXAlignment = LEFT,
+    }, row)
+    lib:Bind(label, "TextColor3", "Text")
+    local btn = New("TextButton", {
+        AnchorPoint = V2(1, 0.5), Position = UD2(1, 0, 0.5, 0), Size = OFF(90, 22),
+        Text = "none", Font = FONT, TextSize = 10, AutoButtonColor = false,
+    }, row)
+    Corner(6, btn)
+    lib:Bind(btn, "BackgroundColor3", "Element")
+    lib:Bind(btn, "TextColor3", "SubText")
+    lib:MakeGlass(btn)
+
+    local entry = { Name = tostring(o.Name or "Keybind"), Key = nil }
+    table.insert(lib.KeyEntries, entry)
+    local waiting = false
+    local callback = o.Callback
+
+    local function set(key, silent)
+        if type(key) == "string" then key = Enum.KeyCode[key] end
+        entry.Key = typeof(key) == "EnumItem" and key or nil
+        lib.Flags[flag] = entry.Key and entry.Key.Name or nil
+        btn.Text = entry.Key and entry.Key.Name or "none"
+        lib:_RefreshKeys()
+        if not silent then lib:Call(callback, entry.Key) end
+    end
+
+    btn.MouseButton1Click:Connect(function()
+        waiting = true
+        btn.Text = "press key"
+    end)
+    lib:Connect(UIS.InputBegan, function(input, processed)
+        if waiting then
+            if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            waiting = false
+            if input.KeyCode == Enum.KeyCode.Escape then set(nil) else set(input.KeyCode) end
+            return
+        end
+        if not processed and entry.Key and input.KeyCode == entry.Key then
+            lib:Call(callback, entry.Key, true)
+        end
+    end)
+
+    set(o.Default, true)
+    lib.Setters[flag] = function(v, s) set(v, s) end
+    return { Set = function(v, s) set(v, s) end, Get = function() return entry.Key end }
+end
+
+function SectionMT:Slider(o)
+    o = o or {}
+    local lib = self.Window.Library
+    local flag = (not o.NoFlag) and (o.Flag or lib:NextFlag()) or nil
+    local min, max = o.Min or 0, o.Max or 100
+    local dec = o.Decimals or 0
+    local suffix = o.Suffix or ""
+
+    local holder = Item(self, "Frame", { Size = UD2(1, 0, 0, 34), BackgroundTransparency = 1 })
+    local nameL = New("TextLabel", {
+        BackgroundTransparency = 1, Size = UD2(1, -60, 0, 14), Text = tostring(o.Name or "Slider"),
+        Font = FONT_TEXT, TextSize = 13, TextXAlignment = LEFT, TextTruncate = TRUNC,
+    }, holder)
+    lib:Bind(nameL, "TextColor3", "Text")
+    local valL = New("TextLabel", {
+        BackgroundTransparency = 1, AnchorPoint = V2(1, 0), Position = UD2(1, 0, 0, 0),
+        Size = OFF(60, 14), Font = FONT, TextSize = 10, TextXAlignment = RIGHT,
+    }, holder)
+    lib:Bind(valL, "TextColor3", "SubText")
+    local track = New("Frame", { Position = OFF(0, 22), Size = UD2(1, 0, 0, 3) }, holder)
+    lib:Bind(track, "BackgroundColor3", "Element")
+    Corner(2, track)
+    local fill = New("Frame", { Size = UD2(0, 0, 1, 0) }, track)
+    lib:Bind(fill, "BackgroundColor3", "Accent")
+    Corner(2, fill)
+    local knob = New("Frame", { AnchorPoint = V2(0.5, 0.5), Position = UD2(0, 0, 0.5, 0), Size = OFF(10, 10), ZIndex = 3 }, track)
+    Corner(5, knob)
+    lib:Bind(knob, "BackgroundColor3", "Text")
+    local hit = New("TextButton", {
+        BackgroundTransparency = 1, Position = OFF(0, -9), Size = UD2(1, 0, 0, 21),
+        Text = "", AutoButtonColor = false, ZIndex = 4,
+    }, track)
+
+    local value = min
+    local function set(v, silent)
+        value = Round(math.clamp(tonumber(v) or min, min, max), dec)
+        local pct = max == min and 0 or (value - min) / (max - min)
+        Tween(fill, { Size = UD2(pct, 0, 1, 0) }, 0.15)
+        Tween(knob, { Position = UD2(pct, 0, 0.5, 0) }, 0.15)
+        valL.Text = string.format("%." .. dec .. "f", value) .. suffix
+        if flag then lib.Flags[flag] = value end
+        if not silent then lib:Call(o.Callback, value) end
+    end
+
+    local sliding = false
+    local function fromX(x)
+        local w = track.AbsoluteSize.X
+        if w <= 0 then return end
+        set(min + (max - min) * math.clamp((x - track.AbsolutePosition.X) / w, 0, 1))
+    end
+    hit.InputBegan:Connect(function(i)
+        if i.UserInputType == MB1 or i.UserInputType == TOUCH then
+            sliding = true
+            fromX(i.Position.X)
+        end
+    end)
+    lib:Connect(UIS.InputChanged, function(i)
+        if sliding and (i.UserInputType == MOVE or i.UserInputType == TOUCH) then fromX(i.Position.X) end
+    end)
+    lib:Connect(UIS.InputEnded, function(i)
+        if i.UserInputType == MB1 or i.UserInputType == TOUCH then sliding = false end
+    end)
+
+    set(o.Default or min, true)
+    if flag then lib.Setters[flag] = function(v, s) set(v, s) end end
+    return { Set = function(v, s) set(v, s) end, Get = function() return value end }
+end
+
+function SectionMT:Dropdown(o)
+    o = o or {}
+    local lib = self.Window.Library
+    local flag = o.Flag or lib:NextFlag()
+    local multi = o.Multi and true or false
+    local value = multi and {} or nil
+    local has, items, open = {}, {}, false
+
+    local holder = Item(self, "Frame", { Size = UD2(1, 0, 0, 28), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1 })
+    VList(holder, 4)
+    local head = New("TextButton", { Size = UD2(1, 0, 0, 28), LayoutOrder = 0, Text = "", AutoButtonColor = false }, holder)
+    Corner(6, head)
+    lib:Bind(head, "BackgroundColor3", "Element")
+    lib:MakeGlass(head)
+    local nameL = New("TextLabel", {
+        BackgroundTransparency = 1, Position = OFF(10, 0), Size = UD2(0.5, -10, 1, 0),
+        Text = tostring(o.Name or "Select"), Font = FONT_TEXT, TextSize = 13, TextXAlignment = LEFT, TextTruncate = TRUNC,
+    }, head)
+    lib:Bind(nameL, "TextColor3", "Text")
+    local valL = New("TextLabel", {
+        BackgroundTransparency = 1, Position = UD2(0.5, 0, 0, 0), Size = UD2(0.5, -30, 1, 0),
+        Text = "None", Font = FONT, TextSize = 10, TextXAlignment = RIGHT, TextTruncate = TRUNC,
+    }, head)
+    lib:Bind(valL, "TextColor3", "SubText")
+    local arrow = New("TextLabel", {
+        BackgroundTransparency = 1, AnchorPoint = V2(1, 0.5), Position = UD2(1, -10, 0.5, 0),
+        Size = OFF(12, 12), Text = "v", Font = FONT_BOLD, TextSize = 12,
+    }, head)
+    lib:Bind(arrow, "TextColor3", "SubText")
+    local list = New("Frame", {
+        Size = UD2(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+        Visible = false, LayoutOrder = 1,
+    }, holder)
+    VList(list, 2)
+
+    local function isSel(n)
+        if multi then return table.find(value, n) ~= nil end
+        return value == n
+    end
+
+    local function paint()
+        if multi then
+            local n = #value
+            if n == 0 then valL.Text = "None"
+            elseif n == 1 then valL.Text = value[1]
+            else valL.Text = n .. " selected" end
+        else
+            valL.Text = value ~= nil and tostring(value) or "None"
+        end
+        for _, it in ipairs(items) do
+            local on = isSel(it.Name)
+            Tween(it.Label, { TextColor3 = on and lib.Theme.Text or lib.Theme.SubText }, 0.2)
+            Tween(it.Mark, { BackgroundTransparency = on and 0 or 1 }, 0.2)
+        end
+    end
+
+    local function setValue(v, silent)
+        if multi then
+            value = {}
+            if type(v) == "table" then
+                for _, x in ipairs(v) do
+                    if has[x] then table.insert(value, x) end
+                end
+            end
+        else
+            value = (v ~= nil and has[v]) and v or nil
+        end
+        paint()
+        lib.Flags[flag] = multi and table.clone(value) or value
+        if not silent then lib:Call(o.Callback, lib.Flags[flag]) end
+    end
+
+    local function add(n)
+        n = tostring(n)
+        if has[n] then return end
+        has[n] = true
+        local b = New("TextButton", {
+            Size = UD2(1, 0, 0, 24), BackgroundTransparency = 1, Text = "",
+            AutoButtonColor = false, LayoutOrder = #items + 1,
+        }, list)
+        local lbl = New("TextLabel", {
+            BackgroundTransparency = 1, Position = OFF(10, 0), Size = UD2(1, -30, 1, 0),
+            Text = n, Font = FONT_TEXT, TextSize = 13, TextXAlignment = LEFT,
+        }, b)
+        lib:Bind(lbl, "TextColor3", "SubText")
+        local mark = New("Frame", {
+            AnchorPoint = V2(1, 0.5), Position = UD2(1, -10, 0.5, 0), Size = OFF(6, 6), BackgroundTransparency = 1,
+        }, b)
+        Corner(3, mark)
+        lib:Bind(mark, "BackgroundColor3", "Accent")
+        b.MouseButton1Click:Connect(function()
+            if multi then
+                local idx = table.find(value, n)
+                if idx then table.remove(value, idx) else table.insert(value, n) end
+                setValue(value)
+            else
+                open = false
+                list.Visible = false
+                setValue(n)
+            end
+        end)
+        table.insert(items, { Name = n, Button = b, Label = lbl, Mark = mark })
+        paint()
+    end
+
+    local function clear()
+        for _, it in ipairs(items) do it.Button:Destroy() end
+        items, has = {}, {}
+    end
+
+    head.MouseButton1Click:Connect(function()
+        open = not open
+        list.Visible = open
+        Tween(arrow, { Rotation = open and 180 or 0 }, 0.2)
+    end)
+
+    for _, item in ipairs(o.Items or {}) do add(item) end
+    setValue(o.Default, true)
+    lib.Setters[flag] = function(v, s) setValue(v, s) end
+
+    return {
+        Set = function(v, s) setValue(v, s) end,
+        Get = function() return value end,
+        Refresh = function(newItems)
+            local keep = multi and table.clone(value) or value
+            clear()
+            for _, it in ipairs(newItems or {}) do add(it) end
+            setValue(keep, true)
+        end,
+    }
+end
+
+function SectionMT:Textbox(o)
+    o = o or {}
+    local lib = self.Window.Library
+    local flag = o.Flag or lib:NextFlag()
+    local holder = Item(self, "Frame", { Size = UD2(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1 })
+    VList(holder, 5)
+    if o.Name then
+        local n = New("TextLabel", {
+            Size = UD2(1, 0, 0, 14), BackgroundTransparency = 1, LayoutOrder = 0,
+            Text = tostring(o.Name), Font = FONT_TEXT, TextSize = 13, TextXAlignment = LEFT,
+        }, holder)
+        lib:Bind(n, "TextColor3", "Text")
+    end
+    local box = New("TextBox", {
+        Size = UD2(1, 0, 0, 28), LayoutOrder = 1, Text = tostring(o.Default or ""),
+        PlaceholderText = tostring(o.Placeholder or "enter text..."), ClearTextOnFocus = false,
+        Font = FONT, TextSize = 11, TextXAlignment = LEFT,
+    }, holder)
+    Corner(6, box)
+    Pad(box, 0, 0, 10, 10)
+    lib:Bind(box, "BackgroundColor3", "Element")
+    lib:Bind(box, "TextColor3", "Text")
+    lib:Bind(box, "PlaceholderColor3", "SubText")
+    lib:MakeGlass(box)
+
+    local function set(v, silent)
+        box.Text = tostring(v)
+        lib.Flags[flag] = box.Text
+        if not silent then lib:Call(o.Callback, box.Text) end
+    end
+    box.FocusLost:Connect(function() set(box.Text) end)
+    set(box.Text, true)
+    lib.Setters[flag] = function(v, s) set(v, s) end
+    return { Set = function(v, s) set(v, s) end, Get = function() return box.Text end }
+end
+
+function SectionMT:Colorpicker(o)
+    o = o or {}
+    local lib = self.Window.Library
+    local flag = o.Flag or lib:NextFlag()
+    local start = o.Default or lib.Theme.Accent
+    local h, s, v = start:ToHSV()
+    local color = start
+
+    local holder = Item(self, "Frame", { Size = UD2(1, 0, 0, 20), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1 })
+    VList(holder, 6)
+    local head = New("TextButton", { Size = UD2(1, 0, 0, 20), LayoutOrder = 0, BackgroundTransparency = 1, Text = "", AutoButtonColor = false }, holder)
+    local nameL = New("TextLabel", {
+        BackgroundTransparency = 1, Size = UD2(1, -40, 1, 0), Text = tostring(o.Name or "Color"),
+        Font = FONT_TEXT, TextSize = 13, TextXAlignment = LEFT,
+    }, head)
+    lib:Bind(nameL, "TextColor3", "Text")
+    local swatch = New("Frame", { AnchorPoint = V2(1, 0.5), Position = UD2(1, 0, 0.5, 0), Size = OFF(30, 14), BackgroundColor3 = start }, head)
+    Corner(4, swatch)
+
+    local panel = New("Frame", {
+        Size = UD2(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+        Visible = false, LayoutOrder = 1,
+    }, holder)
+    VList(panel, 8)
+    local sub = setmetatable({ Window = self.Window, Body = panel, Count = 0 }, SectionMT)
+
+    local function apply(silent)
+        color = Color3.fromHSV(h, s, v)
+        swatch.BackgroundColor3 = color
+        lib.Flags[flag] = color
+        if not silent then lib:Call(o.Callback, color) end
+    end
+
+    local hue = sub:Slider({ Name = "Hue", NoFlag = true, Min = 0, Max = 360, Default = math.floor(h * 360 + 0.5),
+        Callback = function(x) h = x / 360; apply() end })
+    local sat = sub:Slider({ Name = "Saturation", NoFlag = true, Min = 0, Max = 100, Suffix = "%",
+        Default = math.floor(s * 100 + 0.5), Callback = function(x) s = x / 100; apply() end })
+    local val = sub:Slider({ Name = "Brightness", NoFlag = true, Min = 0, Max = 100, Suffix = "%",
+        Default = math.floor(v * 100 + 0.5), Callback = function(x) v = x / 100; apply() end })
+
+    head.MouseButton1Click:Connect(function() panel.Visible = not panel.Visible end)
+    apply(true)
+
+    local function setColor(c, silent)
+        if type(c) == "string" then
+            local ok, parsed = pcall(Color3.fromHex, c)
+            if not ok then return end
+            c = parsed
+        end
+        if typeof(c) ~= "Color3" then return end
+        h, s, v = c:ToHSV()
+        hue.Set(math.floor(h * 360 + 0.5), true)
+        sat.Set(math.floor(s * 100 + 0.5), true)
+        val.Set(math.floor(v * 100 + 0.5), true)
+        apply(silent)
+    end
+    lib.Setters[flag] = function(c, s2) setColor(c, s2) end
+    return { Set = function(c, s2) setColor(c, s2) end, Get = function() return color end }
+end
+
+---------------------------------------------------------------------
+-- search: find main tabs, sub tabs and sections by name
+---------------------------------------------------------------------
+local KIND_RANK = { group = 3, sub = 2, section = 1 }
+
+function WindowMT:Find(query)
+    local q = string.lower(string.match(query or "", "^%s*(.-)%s*$") or "")
+    if q == "" then return nil end
+    local best, bestRank = nil, -1
+    local function consider(kind, name, data)
+        local n = string.lower(name or "")
+        local score
+        if n == q then score = 3
+        elseif string.sub(n, 1, #q) == q then score = 2
+        elseif string.find(n, q, 1, true) then score = 1
+        else return end
+        local rank = score * 10 + KIND_RANK[kind]
+        if rank > bestRank then
+            best, bestRank = { kind = kind, data = data, exact = score == 3 }, rank
+        end
+    end
+    for _, g in ipairs(self.Groups) do consider("group", g.Name, g) end
+    for _, s in ipairs(self.Subs) do consider("sub", s.Name, s) end
+    for _, s in ipairs(self.Subs) do
+        for _, sec in ipairs(s.Sections) do consider("section", sec.Name, sec) end
+    end
+    return best
+end
+
+function WindowMT:Navigate(hit)
+    if not hit then return end
+    if hit.kind == "group" then
+        self:SelectGroup(hit.data)
+    elseif hit.kind == "sub" then
+        self:SelectGroup(hit.data.Group)
+        self:SelectSub(hit.data)
+    else
+        local sec = hit.data
+        self:SelectGroup(sec.Sub.Group)
+        self:SelectSub(sec.Sub)
+        task.spawn(function()
+            task.wait()
+            if sec.Card.Parent then
+                sec.Column.CanvasPosition = V2(0, math.max(0,
+                    sec.Column.CanvasPosition.Y + (sec.Card.AbsolutePosition.Y - sec.Column.AbsolutePosition.Y) - 8))
+            end
+        end)
+    end
+end
+
+function Library:Find(q)
+    if not self.Window then return nil end
+    return self.Window:Find(q)
+end
+
+function Library:Navigate(hit)
+    if self.Window then self.Window:Navigate(hit) end
+end
+
+---------------------------------------------------------------------
+-- watermark
+---------------------------------------------------------------------
+function Library:Watermark(o)
+    o = o or {}
+    local base = tostring(o.Text or "Lib Fac!")
+    local frame = New("Frame", {
+        AnchorPoint = V2(1, 0), Position = UD2(1, -12, 0, 12), Size = UD2(0, 0, 0, 24),
+        AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = self.Theme.Surface, ZIndex = 90,
+    }, self.Holder)
+    Corner(6, frame)
+    self:MakeGlass(frame)
+    Stroke(frame, "Stroke", 1, 0.2)
+    Pad(frame, 0, 0, 10, 10)
+    local label = New("TextLabel", {
+        BackgroundTransparency = 1, Size = UD2(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X,
+        Font = FONT, TextSize = 10, ZIndex = 91,
+    }, frame)
+    self:Bind(label, "TextColor3", "Text")
+
+    local fps, ping, frames, acc = 60, 0, 0, 0
+    local function render()
+        local parts = { base }
+        if o.FPS ~= false then table.insert(parts, math.floor(fps + 0.5) .. " fps") end
+        if o.Ping ~= false then table.insert(parts, ping .. " ms") end
+        if o.Time ~= false then table.insert(parts, os.date("%H:%M:%S")) end
+        label.Text = table.concat(parts, "  |  ")
+    end
+    self:Connect(RunService.Heartbeat, function(dt)
+        frames = frames + 1
+        acc = acc + dt
+        if acc >= 0.5 then
+            fps, frames, acc = frames / acc, 0, 0
+            local ok, v = pcall(function()
+                return math.floor(game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue())
+            end)
+            ping = ok and v or 0
+            render()
+        end
+    end)
+    render()
+    return frame
+end
+
+---------------------------------------------------------------------
+-- settings: save / load flags as json
+---------------------------------------------------------------------
+function Library:GetFlagsTable()
+    local out = {}
+    for k, v in pairs(self.Flags) do
+        if typeof(v) == "Color3" then v = "#" .. v:ToHex() end
+        if typeof(v) == "EnumItem" then v = v.Name end
+        local t = type(v)
+        if t == "string" or t == "number" or t == "boolean" or t == "table" then out[k] = v end
+    end
+    return out
+end
+
+function Library:ApplySettings(data)
+    for flag, value in pairs(data) do
+        local set = self.Setters[flag]
+        if set then pcall(set, value, true) end
+    end
+    -- settings that act on the window are applied after the flags are set
+    self:SetTransparency((self.Flags.ui_transparency or 0) / 100)
+    if type(self.Flags.ui_blur) == "boolean" then self:SetBlur(self.Flags.ui_blur) end
+    self:_RefreshKeys()
+    return true
+end
+
+function Library:SettingsDir()
+    return self.Folder .. "/Settings"
+end
+
+function Library:SaveSetting(name, description)
+    if not HasFS or not name or name == "" then return false end
+    if not isfolder(self.Folder) then makefolder(self.Folder) end
+    if not isfolder(self:SettingsDir()) then makefolder(self:SettingsDir()) end
+    local ok, json = pcall(HttpService.JSONEncode, HttpService, {
+        meta = { name = name, description = description or "", saved = os.time() },
+        flags = self:GetFlagsTable(),
+    })
+    if not ok then return false end
+    writefile(self:SettingsDir() .. "/" .. name .. ".json", json)
+    return true
+end
+
+function Library:LoadSetting(name)
+    if not HasFS or not name or name == "" then return false end
+    local path = self:SettingsDir() .. "/" .. name .. ".json"
+    if not isfile(path) then return false end
+    local ok, data = pcall(HttpService.JSONDecode, HttpService, readfile(path))
+    if not ok or type(data) ~= "table" then return false end
+    return self:ApplySettings(data.flags or data)
+end
+
+function Library:DeleteSetting(name)
+    if not HasFS or typeof(delfile) ~= "function" or not name then return false end
+    local path = self:SettingsDir() .. "/" .. name .. ".json"
+    if not isfile(path) then return false end
+    delfile(path)
+    return true
+end
+
+function Library:ListSettings()
+    local out = {}
+    if not HasFS or not isfolder(self:SettingsDir()) then return out end
+    for _, path in ipairs(listfiles(self:SettingsDir())) do
+        local name = tostring(path):match("([^/\\]+)%.json$")
+        if name then table.insert(out, name) end
+    end
+    table.sort(out)
+    return out
+end
+
+-- the built-in Settings tab
+function Library:SettingsTab(win)
+    local lib = self
+    local tab = win:Tab({ Name = "Settings" })
+    local sub = tab:SubTab({ Name = "Manage" })
+
+    local menu = sub:Section({ Name = "Menu" })
+    menu:Keybind({
+        Name = "Toggle key", Flag = "toggle_key", Default = lib.ToggleKey,
+        Callback = function(key, pressed)
+            if key and not pressed then lib.ToggleKey = key end
+        end,
+    })
+    menu:Toggle({
+        Name = "Show keybind list", Flag = "show_keylist", Default = false,
+        Callback = function() lib:_RefreshKeys() end,
+    })
+
+    local look = sub:Section({ Name = "Appearance" })
+    local trBox
+    local trSlider = look:Slider({
+        Name = "Window Transparency", Flag = "ui_transparency", Min = 0, Max = 90,
+        Default = math.floor(lib.Transparency * 100 + 0.5), Suffix = "%",
+        Callback = function(v)
+            lib:SetTransparency(v / 100)
+            if trBox then trBox.Set(tostring(v), true) end
+        end,
+    })
+    trBox = look:Textbox({
+        Name = "Type percent (0 - 90)", Flag = "ui_transparency_text",
+        Default = tostring(math.floor(lib.Transparency * 100 + 0.5)), Placeholder = "25",
+        Callback = function(text)
+            local n = tonumber(text)
+            if n then trSlider.Set(math.clamp(n, 0, 90)) end
+        end,
+    })
+    look:Toggle({
+        Name = "Background Blur", Flag = "ui_blur", Default = lib.BlurEnabled,
+        Callback = function(on) lib:SetBlur(on) end,
+    })
+
+    local saveSec = sub:Section({ Name = "Save" })
+    local nameBox = saveSec:Textbox({ Name = "Name", Placeholder = "my setting" })
+
+    local loadSec = sub:Section({ Name = "Load", Side = 2 })
+    local list = loadSec:Dropdown({ Name = "Setting", Items = lib:ListSettings() })
+
+    saveSec:Button({
+        Name = "Save",
+        Callback = function()
+            local n = nameBox.Get()
+            if n == "" then
+                lib:Notify({ Title = "Settings", Text = "Enter a name first.", Type = "warning" })
+                return
+            end
+            local ok = lib:SaveSetting(n)
+            lib:Notify({
+                Title = "Settings", Text = ok and ('Saved "' .. n .. '".') or "Could not save.",
+                Type = ok and "success" or "error",
+            })
+            list.Refresh(lib:ListSettings())
+        end,
+    })
+    loadSec:Button({
+        Name = "Load",
+        Callback = function()
+            local n = list.Get()
+            if not n then
+                lib:Notify({ Title = "Settings", Text = "Pick a setting first.", Type = "warning" })
+                return
+            end
+            local ok = lib:LoadSetting(n)
+            lib:Notify({
+                Title = "Settings", Text = ok and ('Loaded "' .. n .. '".') or "Could not load.",
+                Type = ok and "success" or "error",
+            })
+        end,
+    })
+    loadSec:Button({
+        Name = "Delete",
+        Callback = function()
+            local n = list.Get()
+            if not n then
+                lib:Notify({ Title = "Settings", Text = "Pick a setting first.", Type = "warning" })
+                return
+            end
+            local ok = lib:DeleteSetting(n)
+            list.Refresh(lib:ListSettings())
+            lib:Notify({
+                Title = "Settings", Text = ok and ('Deleted "' .. n .. '".') or "Could not delete.",
+                Type = ok and "info" or "error",
+            })
+        end,
+    })
+    loadSec:Button({
+        Name = "Refresh list",
+        Callback = function() list.Refresh(lib:ListSettings()) end,
+    })
+
+    local unload = sub:Section({ Name = "Unload" })
+    unload:Label("Closes the menu and removes the script completely.")
+    unload:Button({
+        Name = "Unload",
+        Callback = function()
+            lib:Notify({ Title = "Lib Fac!", Text = "Unloading...", Type = "info", Duration = 1 })
+            task.delay(0.6, function() lib:Unload() end)
+        end,
+    })
+    return tab
+end
+
+---------------------------------------------------------------------
+-- sections / groups / subs: the rest of the API
+---------------------------------------------------------------------
+function Library:Unload()
+    for _, c in ipairs(self.Connections) do
+        pcall(function() c:Disconnect() end)
+    end
+    self.Connections = {}
+    if self.Blur then pcall(function() self.Blur:Destroy() end) self.Blur = nil end
+    if self.Holder then pcall(function() self.Holder:Destroy() end) end
+    if genv.LibFac == self then genv.LibFac = nil end
+end
+
+genv.LibFac = Library
+return Library
